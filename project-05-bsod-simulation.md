@@ -103,7 +103,15 @@ C:\Windows\MEMORY.DMP
 These files can be analyzed using WinDbg (Windows Debugger) to identify exactly which driver or process triggered the crash. This is standard procedure for recurring BSOD diagnosis in enterprise helpdesk environments.
 
 Ticket Summary
-StepActionResultPre-lab snapshotSnapshot taken in VirtualBox✅ Save point confirmedDisable display adapterDevice Manager✅ Resolution changed — driver removedConfigure memory dumpRegistry edit via CMD✅ Dump retention enabledLaunch NotMyFault64Run as administrator✅ Interface openedSelect crash typeHigh IRQL Fault selected✅ Ready to crashTrigger BSODClicked Crash button✅ BSOD displayed as expectedObserve STOP codeRead BSOD screen✅ IRQL_NOT_LESS_OR_EQUALRecoveryRestored Pre-BSOD snapshot✅ VM fully restored
+StepActionResultPre-lab snapshotSnapshot taken in VirtualBox✅
+Save point confirmedDisable display adapterDevice Manager✅
+Resolution changed — driver removedConfigure memory dumpRegistry edit via CMD✅
+Dump retention enabledLaunch NotMyFault64Run as administrator✅
+Interface openedSelect crash typeHigh IRQL Fault selected✅
+Ready to crashTrigger BSODClicked Crash button✅
+BSOD displayed as expectedObserve STOP codeRead BSOD screen✅
+IRQL_NOT_LESS_OR_EQUALRecoveryRestored Pre-BSOD snapshot✅ 
+VM fully restored
 
 Key Takeaways
 
