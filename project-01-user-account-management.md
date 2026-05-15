@@ -125,4 +125,11 @@ Account lockout due to too many failed password attempts is one of the single mo
 ---
 
 ### Project 1 Summary
-TaskTool UsedCompletedCreate Standard and Admin accountsControl Panel, compmgmt.msc✅Disable and re-enable accountcompmgmt.msc✅Test UAC as Standard userWindows installer, UAC prompt✅Investigate per-user Chrome installFile Explorer, AppData✅Test NTFS Access DeniedFile Explorer, C:\Users✅Reset forgotten passwordcompmgmt.msc✅Configure Password Policygpedit.msc✅Configure and test Account Lockoutgpedit.msc, compmgmt.msc✅
+TaskTool UsedCompletedCreate Standard and Admin accountsControl Panel, compmgmt.msc✅
+Disable and re-enable accountcompmgmt.msc✅
+Test UAC as Standard userWindows installer, UAC prompt✅
+Investigate per-user Chrome installFile Explorer, AppData✅
+Test NTFS Access DeniedFile Explorer, C:\Users✅
+Reset forgotten passwordcompmgmt.msc✅
+Configure Password Policygpedit.msc✅
+Configure and test Account Lockoutgpedit.msc, compmgmt.msc✅
