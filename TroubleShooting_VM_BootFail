@@ -1,0 +1,98 @@
+# Project: Windows Server / Active Directory Lab — VM Boot Failure Troubleshooting
+
+## Scenario
+
+While building out a two-VM Active Directory lab (a Windows 11 client and a Windows Server 2022 domain controller) in VirtualBox 7.2.8, both newly created VMs failed to boot from their installation ISOs, despite each VM being configured following the same process used successfully for prior VMs on the same host (Windows 10 Pro and Ubuntu 24.04 LTS, both fully functional).
+
+This document tracks the troubleshooting process in the order it occurred, including dead ends, to demonstrate a real-world systematic troubleshooting approach — not just the eventual fix.
+
+**Status: Unresolved as of this writing.** Root cause has been narrowed but not yet confirmed.
+
+---
+
+## Environment
+
+- **Host:** Windows (VirtualBox 7.2.8, Extension Pack 7.2.10)
+- **VMs affected:** `WIN11-Client` (Windows 11 Pro), `DC01` (Windows Server 2022 Standard)
+- **VMs unaffected (baseline):** Win10-Lab (Windows 10 Pro), Ubuntu 24.04 LTS — both still boot and run normally
+- **Symptom:** VirtualBox boots to its own splash screen, then displays: `No bootable device found` with a retry/mount-disk prompt. Retrying or re-mounting the ISO loops back to the same error indefinitely.
+
+---
+
+## Troubleshooting Timeline
+
+### 1. Initial build — unattended install path
+- Built `WIN11-Client` using VirtualBox's "Unattended Installation" wizard.
+- **Result:** OS Version field defaulted to **Windows NT 4**, and the unattended install checkbox was greyed out/unavailable.
+- **Lesson:** VirtualBox's OS auto-detection can silently default to an incorrect/ancient OS type if the ISO isn't selected in the right order during VM creation. This cascades into other configuration problems (wrong default boot behavior, wrong guest OS assumptions) without an obvious error pointing back to the real cause.
+
+### 2. Corrected OS type, abandoned unattended install
+- Deleted and rebuilt VM, manually selecting **Windows 10 (64-bit)** as the OS type (Windows 11 wasn't listed in this VirtualBox version's dropdown).
+- Skipped the unattended install wizard entirely and proceeded manually for full control.
+- **Result:** VM booted to VirtualBox's own "failed to boot" dialog rather than a true black screen — progress, since it confirmed the VM itself could initialize.
+
+### 3. ISO attachment / storage configuration
+- Discovered the optical drive had no media attached under Storage settings — likely because the unattended install flow in step 1 never properly carried over the ISO selection.
+- Manually attached the ISO under the SATA controller, confirmed **Live CD/DVD** checkbox was enabled, and corrected boot order (**Optical** above **Hard Disk**, **Floppy** and **Network** disabled).
+- **Result:** No change — same boot failure loop persisted.
+
+### 4. Mark of the Web (file-level block)
+- Checked ISO file Properties on the host and found Windows had flagged the file as originating from another computer (Mark of the Web), with no digital signature shown.
+- Checked the **Unblock** box in file Properties and re-applied.
+- **Result:** No change. This was a legitimate finding worth fixing regardless (Windows correctly flags internet-downloaded files for review), but it was not the root cause of the boot failure.
+
+### 5. Controller type (SATA vs. IDE)
+- Tested moving the optical drive from the SATA controller to a newly added IDE controller, based on a known VirtualBox 7.x issue where SATA-attached optical media can fail to register as a valid UEFI/BIOS boot device even when correctly configured.
+- **Result:** No change in behavior.
+
+### 6. UEFI vs. Legacy BIOS
+- With EFI enabled (required by Microsoft for genuine Windows 11 installs), the VM produced a true black screen with zero output — not even the VirtualBox splash or a firmware-level message.
+- Disabled **Enable EFI** under System → Motherboard to fall back to legacy BIOS boot.
+- **Result:** This changed the symptom — the VM now reliably reached the VirtualBox boot screen and produced the explicit `No bootable device found` message instead of a silent black screen. This confirmed the VM's core boot path (CPU virtualization, base hardware emulation) was functioning; the issue is specifically about how the optical/boot media is being presented, not whether the VM can run at all.
+
+### 7. Hardware virtualization & Extension Pack
+- Confirmed Intel VT-x enabled at the BIOS/host level (confirmed working, since other VMs on this host run fine).
+- Installed VirtualBox 7.2.10 Extension Pack (previously not installed).
+- **Result:** No change.
+
+### 8. Graphics controller
+- Checked Display settings; Graphics Controller was already set to **VBoxSVGA** (the recommended setting for EFI/Windows 11 guests). Enabled 3D acceleration as an additional test.
+- **Result:** No change.
+
+### 9. ISO integrity — ruled out
+- Re-downloaded the Windows 11 ISO using the Media Creation Tool (which validates the download) rather than the direct ISO download link, to rule out a corrupted file.
+- **Result:** Identical failure with the freshly downloaded, validated ISO.
+- This is a key finding: **the Windows Server 2022 ISO (a completely separate download, from a separate Microsoft portal) exhibits the exact same failure mode.** Two independently sourced, correctly-sized ISOs failing identically strongly suggests the problem is not file corruption.
+
+---
+
+## Current Working Theory
+
+Because:
+- Other VMs on this exact VirtualBox installation boot and run without issue (rules out a host-level virtualization or VirtualBox installation problem), and
+- Two separate ISOs from two separate Microsoft download portals fail identically (rules out ISO corruption),
+
+the remaining variable is **some configuration difference between how these two new VMs were created versus the working baseline VMs** — even though, at a glance, the same settings (EFI/BIOS, controller type, graphics controller, network) have been checked and appear correct on paper.
+
+### Next steps to isolate the cause
+- [ ] Directly compare every setting (via VBoxManage `showvminfo`) between a known-working VM and `DC01`/`WIN11-Client` to catch any non-obvious difference not visible in the GUI at a glance
+- [ ] Test booting a known-good, previously-working ISO (e.g., the Ubuntu ISO already confirmed to work) on a freshly created VM with identical settings to `DC01`, to isolate whether the problem is VM-creation-specific or media-specific
+- [ ] Check VirtualBox.log for the affected VM for low-level errors not surfaced in the GUI
+- [ ] Consider testing with a completely fresh VirtualBox profile/VM folder location to rule out a corrupted VM configuration template
+
+---
+
+## CompTIA A+ Domain Relevance
+
+- **1.1 / 1.2 — Mobile devices & networking hardware:** N/A this project, but VM hardware emulation concepts (virtual storage controllers, virtual NICs) tie into broader hardware fundamentals.
+- **3.1 — Cloud computing concepts (virtualization):** Direct hands-on application of hypervisor configuration, virtual hardware allocation (RAM/CPU/disk), and virtual storage controller behavior (SATA vs. IDE).
+- **5.1 / 5.2 — Troubleshooting methodology:** This project is a live demonstration of the standard A+ troubleshooting model — identify the problem, establish a theory of probable cause, test the theory, establish a plan of action, verify full system functionality, and document findings — applied to a real, unresolved technical issue rather than a textbook scenario.
+
+---
+
+## Lessons Learned
+
+- A silent black screen and an explicit "no bootable device" error are different failure modes that point to different layers of the stack (firmware/EFI initialization vs. boot device detection) — learning to distinguish them narrowed troubleshooting significantly.
+- When two independently sourced files produce identical failures, suspect configuration over media. It's tempting to keep blaming the download, but ruling out the file early would have saved real time here.
+- Comparing against a known-working baseline (the existing Win10/Ubuntu VMs) is more efficient than testing settings in isolation — the next step in this investigation is a direct line-by-line config diff against that baseline rather than continuing to guess at individual settings.
+- Not every IT problem resolves on the expected timeline. Documenting an in-progress, unresolved issue with a clear methodology is itself a valid and realistic portfolio artifact.
