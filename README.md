@@ -57,5 +57,6 @@ Windows 10 Pro virtual machine running on Oracle VirtualBox.
 
 ---
 
-## Currently Studying For
-CompTIA A+ Core 1 (220-1101) and Core 2 (220-1102)
+## Currently Studying
+CompTIA Network+ & Security+ 
+CompTIA A+ Certified
