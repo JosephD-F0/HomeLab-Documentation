@@ -1,0 +1,299 @@
+# AD-01: Domain Controller Setup & AD DS Installation — Verification & Baseline Audit
+
+## Scenario
+
+A newly provisioned Windows Server 2022 Domain Controller has been handed off for verification before any users or computers are added to the environment. The task is to audit the DC's health, confirm all critical services and components are functioning correctly, understand the default AD structure, and establish a documented baseline configuration — mirroring what a junior sysadmin would be expected to do when inheriting a new domain controller.
+
+**Status:** Core verification completed successfully. Recurring BSOD instability identified during session — root cause isolated, fix pending next session.
+
+---
+
+## Environment
+
+| Component | Details |
+|---|---|
+| Server | `DC01` — Windows Server 2022 Standard Evaluation (Desktop Experience) |
+| Domain | `homelab.local` |
+| DC IP | `192.168.50.10` (static) |
+| DNS | DC01 acting as authoritative DNS for `homelab.local` |
+| Client | `WIN11-01` (`192.168.50.20`) — domain joined, verified member |
+| Hypervisor | VMware Workstation Pro |
+
+---
+
+## Step 1 — Verified Critical AD Services
+
+Opened PowerShell as Administrator on DC01 and ran:
+
+```powershell
+Get-Service adws,kdc,netlogon,dns
+```
+
+All four services confirmed **Running:**
+
+| Service | Full Name | Role |
+|---|---|---|
+| `adws` | Active Directory Web Services | Allows PowerShell AD module to communicate with AD |
+| `kdc` | Kerberos Key Distribution Center | Handles all domain authentication requests |
+| `netlogon` | Netlogon | Processes domain logon requests from client machines |
+| `dns` | DNS Server | Resolves domain names — backbone of AD functionality |
+
+**Why this matters:** If any of these services stop, the domain stops functioning. NETLOGON down means no one can log in. KDC down means Kerberos authentication fails across the board. DNS down means clients can't locate the DC at all. These four are the first thing to check on any DC health call.
+
+---
+
+## Step 2 — Verified Domain and DC Role
+
+```powershell
+Get-ADDomain
+```
+
+**Key output confirmed:**
+- `DNSRoot` — `homelab.local`
+- `PDCEmulator` — `DC01.homelab.local`
+- `RIDMaster` — `DC01.homelab.local`
+- `InfrastructureRole` — `DC01.homelab.local`
+
+All five FSMO (Flexible Single Master Operations) roles held by DC01, as expected in a single-DC forest.
+
+```powershell
+Get-ADDomainController
+```
+
+Confirmed DC01 recognized as domain controller with correct IP, OS version, and site assignment.
+
+**What FSMO roles are:** In an AD forest, certain sensitive operations can only be performed by one DC at a time to prevent conflicts — things like creating new security identifiers for objects, managing password changes, and keeping time synchronized across the domain. These are called FSMO roles. In a single-DC lab, one server holds all five. In larger environments they can be distributed across multiple DCs.
+
+---
+
+## Step 3 — Verified DNS Resolution
+
+DNS is the foundation Active Directory runs on. Every client finds the domain controller by resolving its hostname — not by IP. If DNS breaks, the entire domain becomes unreachable regardless of whether the DC itself is running.
+
+```powershell
+# Forward lookup — domain name to IP
+Resolve-DnsName homelab.local
+
+# Hostname resolution
+Resolve-DnsName DC01.homelab.local
+
+# Reverse lookup — IP to hostname
+Resolve-DnsName 192.168.50.10
+```
+
+All three returned correct results pointing to `192.168.50.10`.
+
+**Verified in DNS Manager:**
+- Server Manager → Tools → DNS
+- Forward Lookup Zones → `homelab.local`
+- Confirmed presence of A record for DC01 and `_msdcs` service records
+
+**What `_msdcs` records are:** These are service locator records that AD clients use to find specific domain services — things like which DC handles Kerberos, which handles LDAP queries, and which is the PDC Emulator. They're created automatically during DC promotion and their presence confirms AD DS is advertising itself correctly to the network.
+
+---
+
+## Step 4 — Verified SYSVOL and NETLOGON Shares
+
+```powershell
+net share
+```
+
+Both `SYSVOL` and `NETLOGON` confirmed present in share list.
+
+```powershell
+Test-Path C:\Windows\SYSVOL
+Test-Path C:\Windows\SYSVOL\sysvol\homelab.local\scripts
+```
+
+Both returned `True`.
+
+**What these shares do:**
+
+| Share | Purpose |
+|---|---|
+| `SYSVOL` | Holds Group Policy templates and logon scripts — replicated to all DCs in multi-DC environments |
+| `NETLOGON` | Where clients look for logon scripts during domain authentication |
+
+If either share is missing after DC promotion it indicates the promotion didn't complete cleanly and AD replication or DFSR (Distributed File System Replication) has an issue.
+
+---
+
+## Step 5 — Explored Default AD Structure
+
+Opened Active Directory Users and Computers:
+- Server Manager → Tools → Active Directory Users and Computers
+- Expanded `homelab.local`
+
+**Default containers reviewed:**
+
+| Container | Contents / Purpose |
+|---|---|
+| `Builtin` | Default built-in security groups — Administrators, Users, Guests, etc. |
+| `Computers` | Default landing zone for newly domain-joined computers |
+| `Domain Controllers` | DC01 listed here — all DCs in the forest appear in this OU |
+| `ForeignSecurityPrincipals` | Placeholder for accounts from externally trusted domains |
+| `Users` | Default container for user accounts and several built-in groups |
+
+**Key observation:** `WIN11-01` appeared in the `Computers` container, confirming the domain join from the build session was registered correctly in AD.
+
+---
+
+## Step 6 — Reviewed Event Viewer for Post-Promotion Errors
+
+- Event Viewer → Windows Logs → System
+- Filtered for Errors and Warnings only
+- Sources reviewed: NETLOGON, DNS, Kerberos, ActiveDirectory_DomainService
+
+Found expected DNS delegation warnings from the promotion process — these are normal in a new single-forest lab environment with no parent DNS zone. No critical errors from NETLOGON or KDC that would indicate authentication problems.
+
+**Note:** Attempting to review Application logs triggered a BSOD (stop code: `IRQL_NOT_LESS_OR_EQUAL`) — see BSOD section below.
+
+---
+
+## Step 7 — Created Baseline OU Structure
+
+Real AD environments use Organizational Units rather than default containers to organize objects and apply targeted Group Policy. Built the following OU structure that will be used across all 14 lab projects:
+
+In Active Directory Users and Computers → right-click `homelab.local` → New → Organizational Unit:
+
+| OU Name | Purpose |
+|---|---|
+| `HOMELAB_USERS` | All standard domain user accounts |
+| `HOMELAB_COMPUTERS` | All domain-joined workstations |
+| `HOMELAB_GROUPS` | Security and distribution groups |
+| `HOMELAB_ADMINS` | Administrative and privileged accounts |
+
+**Moved WIN11-01 to correct OU:**
+- Computers container → right-click WIN11-01 → Move → HOMELAB_COMPUTERS
+
+**Verified via PowerShell:**
+```powershell
+Get-ADComputer WIN11-01 | Select-Object DistinguishedName
+```
+
+Output confirmed: `CN=WIN11-01,CN=HOMELAB_COMPUTERS,DC=homelab,DC=local`
+
+**What DistinguishedName means:** This is AD's internal addressing format — it reads right to left and describes the full path to an object in the directory tree. `DC=homelab,DC=local` is the domain root, `CN=HOMELAB_COMPUTERS` is the container, and `CN=WIN11-01` is the object itself. Every object in AD has a unique DN.
+
+---
+
+## Step 8 — DC Diagnostics (dcdiag)
+
+```powershell
+dcdiag /v > C:\Users\Administrator\Desktop\dcdiag-results.txt
+```
+
+Output redirected to text file to avoid BSOD triggers from clipboard operations in PowerShell (see BSOD section). Results reviewed from Notepad.
+
+**All tests passed successfully**, including:
+
+| Test | Result |
+|---|---|
+| Connectivity | Passed |
+| Replications | Passed |
+| NCSecDesc | Passed |
+| NetLogons | Passed |
+| Advertising | Passed |
+| KnowsOfRoleHolders | Passed |
+| RidManager | Passed |
+| MachineAccount | Passed |
+| Services | Passed |
+| DFSREvent | Passed |
+
+**What dcdiag is:** The standard Microsoft diagnostic tool for verifying domain controller health. It runs a full battery of tests covering connectivity, replication, security descriptors, service status, FSMO role recognition, and more. Running `dcdiag /v` after any major DC operation is standard sysadmin practice — if something is wrong with your DC, dcdiag will usually tell you what and where.
+
+---
+
+## Issue Encountered — Recurring BSODs During Verification Session
+
+### Summary
+
+Five BSODs occurred during the AD-01 verification session. Two additional BSODs occurred attempting to copy PowerShell output. All crashes happened during routine operations — reviewing event logs, running dcdiag, and attempting to copy text.
+
+### Stop codes observed
+
+| Occurrence | Stop Code |
+|---|---|
+| 1 | `IRQL_NOT_LESS_OR_EQUAL` |
+| 2 | `IRQL_NOT_LESS_OR_EQUAL` |
+| 3 | `IRQL_NOT_LESS_OR_EQUAL` |
+| 4 | `IRQL_NOT_LESS_OR_EQUAL` |
+| 5 | `EXCEPTION_OR_INVALID_STACK` (new code — escalation) |
+
+The appearance of a second distinct stop code alongside the recurring IRQL error indicates the instability is worsening rather than being a one-time spike.
+
+### Root cause identified
+
+A status bar message appeared at the bottom of the VMware window timed precisely with the BSODs:
+
+```
+Cannot connect to floppy A
+```
+
+This error traces directly back to the `autoinst.flp` floppy file that was removed from the `.vmx` file during the build session to fix the Easy Install interference. While the floppy lines were removed from the `.vmx` configuration, VMware is still attempting to connect to a floppy device — likely because a reference remains in the `.vmxf` extended configuration file or the VM's NVRAM/EFI settings retained the floppy device from the original Easy Install setup.
+
+**What `IRQL_NOT_LESS_OR_EQUAL` means in this context:** A kernel-level process attempted to access memory at an interrupt request level higher than permitted. In a VM, this typically occurs when a device driver or virtual hardware component tries to handle an interrupt for hardware that doesn't exist or isn't responding — consistent with the VM repeatedly attempting to access a floppy drive that has no media and no valid device to connect to.
+
+**Why clipboard/copy operations triggered crashes:** VMware's clipboard sharing between host and guest runs through VMware Tools. During a copy operation, VMware Tools sends an interrupt to synchronize clipboard state. If the VM's interrupt handling is already unstable due to the floppy device conflict, this additional interrupt can push it over the edge into a crash — which explains why crashes clustered around copy attempts specifically.
+
+### Fix identified — pending next session
+
+1. Power off DC01
+2. Open `DC01.vmx` in Notepad and confirm all floppy references are removed
+3. Also open `DC01.vmxf` (the extended config file in the same folder) and remove any floppy references there
+4. Delete or rename `DC01.nvram` to force the VM to regenerate its firmware settings fresh — this clears any floppy device retained in the EFI/BIOS configuration
+5. Boot DC01 and verify the "Cannot connect to floppy" message no longer appears in the VMware status bar
+6. If BSODs persist after floppy removal, reinstall VMware Tools from inside the VM: VMware menu → VM → Install VMware Tools
+
+### Workaround applied during this session
+
+To avoid triggering BSODs while still capturing command output, all long PowerShell commands were redirected to text files rather than copied directly from the terminal:
+
+```powershell
+# Instead of copying from the PowerShell window
+dcdiag /v > C:\Users\Administrator\Desktop\dcdiag-results.txt
+
+# Then opened the file in Notepad — no clipboard interaction with PowerShell required
+notepad C:\Users\Administrator\Desktop\dcdiag-results.txt
+```
+
+This is standard practice for long command outputs regardless of VM stability — text file redirection is cleaner, preserves the full output, and is easily shareable.
+
+---
+
+## Snapshots Taken
+
+| Snapshot | VM | Timing |
+|---|---|---|
+| `DC01 - AD-01 complete - verified healthy baseline` | DC01 | After dcdiag passed, before end of session |
+
+---
+
+## Lessons Learned
+
+- `dcdiag /v` is the standard post-promotion health check for any domain controller — all tests passing confirms AD DS, DNS, NETLOGON, SYSVOL, and replication are functioning correctly
+- Redirecting long PowerShell outputs to text files (`command > file.txt`) is cleaner and more reliable than copying from the terminal window — standard sysadmin practice
+- FSMO roles are critical AD functions that only one DC can perform at a time — in a single-DC lab all five roles are held by the same server
+- The `_msdcs` DNS records are automatically created during DC promotion and are what AD clients use to locate domain services — their presence is a health indicator
+- SYSVOL and NETLOGON share existence should always be verified after DC promotion — missing shares indicate an incomplete promotion
+- OU structure should be established before users and computers are created — moving objects after the fact works but applying Group Policy retroactively is more complex
+- A `DistinguishedName` in AD reads right to left and describes the full directory path to an object — `CN=WIN11-01,CN=HOMELAB_COMPUTERS,DC=homelab,DC=local` means WIN11-01 is in HOMELAB_COMPUTERS in the homelab.local domain
+- VMware status bar messages can provide critical diagnostic clues during VM instability — the "Cannot connect to floppy A" message directly identified the BSOD root cause
+- When a VM shows escalating stop codes (new codes appearing alongside recurring ones), treat it as an urgent stability issue rather than a one-time spike
+
+---
+
+## CompTIA A+ Domain Relevance
+
+- **Domain 2.0 — Networking:** DNS resolution verification (`Resolve-DnsName`, `nslookup`), understanding how clients locate domain services via DNS, service locator records
+- **Domain 3.0 — Hardware:** Virtual hardware conflicts causing kernel-level crashes — direct parallel to physical hardware driver conflicts causing BSODs on real machines
+- **Domain 4.0 — Virtualization:** VM configuration file structure (`.vmx`, `.vmxf`, `.nvram`), VMware Tools role in guest/host integration, virtual device management
+- **Domain 5.0 — Operating Systems:** Active Directory structure and containers, OU design, PowerShell for AD administration, Windows service management
+- **Domain 5.7 — Troubleshooting:** BSOD stop code interpretation, root cause isolation via status bar messages and event correlation, systematic workaround implementation while root cause fix is pending
+
+---
+
+## Next Steps
+
+- **Immediate:** Fix DC01 BSOD instability by removing residual floppy references from `.vmxf` and regenerating NVRAM — document as a standalone troubleshooting entry
+- **AD-02:** Users, Groups, and OUs — build a realistic org structure with department-based user accounts, security groups, and targeted OU policy application
