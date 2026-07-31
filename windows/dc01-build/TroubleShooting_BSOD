@@ -1,0 +1,162 @@
+# Troubleshooting: DC01 Recurring BSOD — Residual Floppy Device Reference
+
+## Overview
+
+Following successful AD DS installation and domain controller promotion on DC01, a pattern of recurring BSODs began occurring during routine operations including reviewing Event Viewer logs, running dcdiag, and copying PowerShell output. The issue escalated across multiple sessions with stop codes intensifying over time. Root cause was identified as a residual floppy device reference left over from VMware's Easy Install setup process, combined with VMware Tools not being installed on the VM.
+
+**Status:** Resolved
+
+---
+
+## Environment
+
+| Component | Details |
+|---|---|
+| VM | DC01 — Windows Server 2022 Standard Evaluation (Desktop Experience) |
+| Hypervisor | VMware Workstation Pro |
+| Domain | homelab.local |
+| IP | 192.168.50.10 |
+
+---
+
+## Symptoms
+
+- Recurring BSODs during routine AD administration tasks
+- Stop code: `IRQL_NOT_LESS_OR_EQUAL` (majority of crashes)
+- Stop code: `EXCEPTION_OR_INVALID_STACK` (appeared in later sessions — escalation indicator)
+- Crashes clustered specifically around clipboard/copy operations in PowerShell
+- VMware status bar displayed `Cannot connect to floppy A` timed precisely with each BSOD
+- VM remained stable immediately after reboot but would crash again during the same types of operations
+
+---
+
+## Root Cause
+
+Two compounding issues identified:
+
+**Issue 1 — Residual floppy device:**
+During the original VM build, VMware's Easy Install feature was used. Easy Install injects an `autoinst.flp` floppy automation file into the VM to handle unattended OS installation. The floppy lines were previously removed from the `.vmx` configuration file to fix an installer error, but the floppy device itself was never removed from the VM's hardware settings, and a reference to it remained stored in the VM's NVRAM (firmware settings file). On every boot, the EFI firmware was attempting to connect to a floppy drive that had no valid device or media — generating repeated hardware interrupts that destabilized the VM's memory handling and triggered `IRQL_NOT_LESS_OR_EQUAL` crashes.
+
+**Why clipboard operations specifically triggered crashes:** VMware's clipboard sharing between host and guest runs through VMware Tools. During a copy operation, VMware Tools sends an interrupt to synchronize clipboard state between the host and guest. With the VM's interrupt handling already unstable due to the floppy conflict, this additional interrupt was enough to push the system over the edge — which is why BSODs clustered specifically around copy attempts.
+
+**Issue 2 — VMware Tools not installed:**
+The `.vmx` file contained `tools.remindInstall = "TRUE"` — confirming VMware Tools had never been properly installed on DC01. VMware Tools provides the critical drivers that handle memory management, display, and device communication between the VM and the host. Without it the VM runs on generic drivers which are significantly less stable, especially under load.
+
+The combination of a phantom hardware device generating bad interrupts and missing guest drivers created a VM that was functional enough to complete AD DS promotion but too unstable for sustained administrative work.
+
+---
+
+## Stop Code Reference
+
+| Stop Code | Meaning |
+|---|---|
+| `IRQL_NOT_LESS_OR_EQUAL` | A process attempted to access memory at an interrupt request level higher than permitted — in a VM context typically indicates a virtual hardware device conflict or driver issue |
+| `EXCEPTION_OR_INVALID_STACK` | A more severe memory/stack corruption error — its appearance alongside the IRQL error indicated the instability was escalating rather than being isolated |
+
+**Key diagnostic principle:** When a second distinct stop code appears alongside a recurring one, treat it as an escalation signal — the underlying issue is getting worse, not staying stable.
+
+---
+
+## Diagnostic Steps
+
+**Step 1 — Disabled auto-restart to capture stop codes:**
+- Right-click Start → System → Advanced system settings
+- Startup and Recovery → Settings → unchecked Automatically restart
+- Set memory dump to Small memory dump
+- This froze the BSOD on screen long enough to read and record the stop codes
+
+**Step 2 — Identified timing correlation:**
+- Observed VMware status bar during normal VM operation
+- `Cannot connect to floppy A` message appeared at the bottom of the VMware window timed precisely with each BSOD occurrence
+- This directly linked the crashes to a virtual hardware device failure rather than a software or AD configuration issue
+
+**Step 3 — Inspected VM configuration files:**
+- Opened `Windows Server 2022 (2).vmxf` in Notepad — no floppy references found
+- Opened `Windows Server 2022 (2).vmx` in Notepad — floppy lines previously removed, but floppy device still present in VM hardware settings
+- Confirmed `tools.remindInstall = "TRUE"` in .vmx — VMware Tools never installed
+
+**Step 4 — Identified NVRAM as remaining floppy reference location:**
+- `.vmx` and `.vmxf` files were both clean
+- NVRAM file (`Windows Server 2022 (2).nvram`) stores EFI firmware settings independently of the .vmx — the floppy device was being retained here even after .vmx cleanup
+
+---
+
+## Fix Applied
+
+All steps performed with DC01 powered off:
+
+**1 — Removed floppy device from VM hardware settings:**
+- VMware → right-click DC01 → Settings
+- Selected Floppy device → clicked Remove
+- Confirmed floppy no longer listed in hardware
+
+**2 — Deleted NVRAM file to force clean firmware regeneration:**
+- Navigated to VM folder
+- Deleted `Windows Server 2022 (2).nvram`
+- VMware automatically regenerates this file on next boot with a clean firmware state — no floppy device retained
+
+**3 — Enabled automatic VMware Tools updates:**
+- VM Settings → Options → VMware Tools
+- Set to Update automatically
+
+**4 — Booted DC01 and installed VMware Tools:**
+- VMware menu → VM → Install VMware Tools
+- Inside DC01: File Explorer → DVD drive → ran setup64.exe
+- Selected Complete installation → installed → restarted VM
+
+**5 — Verified AD services still healthy post-fix:**
+```powershell
+Get-Service adws,kdc,netlogon,dns
+```
+All four returned Running — domain controller healthy after all changes.
+
+**6 — Confirmed floppy message gone:**
+- VMware status bar monitored after boot
+- `Cannot connect to floppy A` message no longer appeared
+
+---
+
+## Verification
+
+```powershell
+Get-Service adws,kdc,netlogon,dns
+
+# Output:
+# Status   Name               DisplayName
+# -------  ----               -----------
+# Running  adws               Active Directory Web Services
+# Running  dns                DNS Server
+# Running  kdc                Kerberos Key Distribution Center
+# Running  netlogon           Netlogon
+```
+
+No BSODs during post-fix verification session.
+
+---
+
+## Snapshot Taken
+
+`DC01 - floppy removed - VMware Tools fixed - stable baseline`
+
+This is the clean baseline for all subsequent AD projects.
+
+---
+
+## Lessons Learned
+
+- VMware Easy Install leaves behind an `autoinst.flp` floppy artifact that must be fully removed — from the `.vmx` file, from VM hardware settings, AND from the NVRAM file. Removing it from only one location is insufficient.
+- The `.nvram` file stores EFI/BIOS firmware settings independently of the `.vmx` — deleting it forces VMware to regenerate a clean firmware state on next boot. This is the correct fix when phantom hardware devices persist after `.vmx` cleanup.
+- VMware Tools should always be installed immediately after OS installation — it provides the critical drivers for stable guest/host communication. The `tools.remindInstall = "TRUE"` line in a `.vmx` file is a quick way to confirm whether Tools has ever been installed.
+- BSOD stop codes that cluster around a specific operation (clipboard copy in this case) point toward the mechanism triggering the crash rather than a random memory error — follow the pattern, not just the code.
+- The VMware status bar at the bottom of the VM window displays device connection errors in real time — monitoring it during instability can surface hardware-level issues that don't appear in Windows Event Viewer.
+- Two different stop codes appearing in the same instability pattern is an escalation signal — address it immediately rather than waiting to see if it stabilizes on its own.
+
+---
+
+## CompTIA A+ Domain Relevance
+
+- **Domain 3.0 — Hardware:** Virtual hardware conflicts causing kernel-level crashes mirror physical hardware driver conflicts causing BSODs on real machines — same diagnostic approach applies in both contexts
+- **Domain 4.0 — Virtualization:** VM configuration file structure (`.vmx`, `.vmxf`, `.nvram`), VMware Tools role in guest/host stability, virtual device management and removal
+- **Domain 5.7 — Troubleshooting:** Stop code identification and interpretation, timing correlation as a diagnostic technique, systematic elimination of variables across multiple configuration layers, escalation recognition
+
+---
