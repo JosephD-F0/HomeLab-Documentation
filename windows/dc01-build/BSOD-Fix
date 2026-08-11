@@ -1,0 +1,53 @@
+Troubleshooting: DC01 Recurring BSOD — Windows Defender Kernel Driver Conflict
+Root Cause
+
+Event log analysis revealed MpKslDrv.sys — Windows Defender's kernel-level scanning driver — was being loaded each time Defender updated its definitions. In a VMware VM environment this driver conflicts with VMware's own kernel drivers, triggering IRQL_NOT_LESS_OR_EQUAL crashes. The timestamp of the driver installation matched precisely with BSOD occurrences confirming it as the cause.
+
+Source: BugCheck
+Code: 0x0000000a (IRQL_NOT_LESS_OR_EQUAL)
+Parameters: (0x0000000000000001, 0x00000000000000ff, 0x0000000000000000, 0xfffff804776bb190)
+IRQL at crash: 0xff (255) — impossibly high, confirms kernel driver conflict not resource pressure
+Minidump: C:\Windows\Minidump\081026-15171-01.dmp
+Diagnostic Commands Used
+powershell
+# Pulled last 20 system errors
+Get-EventLog -LogName System -EntryType Error -Newest 20 | Format-List TimeGenerated, Source, Message > C:\Users\Administrator\Desktop\errors.txt
+
+# Listed recently installed drivers
+Get-WinEvent -LogName System | Where-Object {$_.Id -eq 7045} | Select-Object TimeCreated, Message | Format-List > C:\Users\Administrator\Desktop\drivers.txt
+
+# Listed minidump files
+Get-ChildItem C:\Windows\Minidump | Select-Object Name, LastWriteTime | Sort-Object LastWriteTime -Descending
+Fix Applied
+
+Windows Defender disabled via Group Policy — PowerShell commands were blocked by Defender's self-protection mechanism and denied access even from an Administrator account.
+
+gpedit.msc → Computer Configuration → Administrative Templates → Windows Components → Microsoft Defender Antivirus:
+
+Turn off Microsoft Defender Antivirus → Enabled
+
+Microsoft Defender Antivirus → Real-time Protection:
+
+Turn off real-time protection → Enabled
+Turn off behavior monitoring → Enabled
+Turn off process scanning whenever real-time protection is enabled → Enabled
+powershell
+# Forced policy to apply immediately
+gpupdate /force
+
+Restarted DC01 to fully unload Defender's kernel drivers from memory.
+
+Why This Is Acceptable in a Lab
+
+DC01 is an isolated VM on a private labnet segment with no internet access. There is nothing for Defender to protect against in this environment. In a production environment Windows Defender would remain enabled and the fix would involve configuring exclusions for VMware processes rather than disabling Defender entirely.
+
+Snapshot Taken
+
+DC01 - Defender disabled - BSOD fix
+
+Lessons Learned
+An IRQL value of 0xff (255) in a BugCheck parameter indicates a kernel driver calling at an invalid interrupt level — this points to a driver conflict, not resource pressure
+Minidump files in C:\Windows\Minidump contain detailed crash data — analyzing them alongside the driver installation log (Event ID 7045) can pinpoint the exact cause of recurring BSODs
+Windows Defender protects itself from being stopped via PowerShell even by Administrator accounts — Group Policy is the correct override path
+Timestamp correlation between driver installation events and crash events is a reliable diagnostic technique — if a driver loaded at 6:05 PM and a BSOD hit at 6:21 PM, that driver is the first suspect
+In isolated lab VMs with no internet exposure, disabling Defender is a reasonable stability fix — in production, configure exclusions instead
